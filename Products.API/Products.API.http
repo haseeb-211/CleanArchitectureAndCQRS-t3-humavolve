@@ -1,0 +1,56 @@
+@ProductsAPI_HostAddress = http://localhost:5062
+
+### Get all products
+GET {{ProductsAPI_HostAddress}}/api/products
+Accept: application/json
+
+### Get product by id
+GET {{ProductsAPI_HostAddress}}/api/products/1
+Accept: application/json
+
+### Invalid id (expects 400)
+GET {{ProductsAPI_HostAddress}}/api/products/0
+Accept: application/json
+
+### Create product (expects 201 + Location header)
+POST {{ProductsAPI_HostAddress}}/api/products
+Content-Type: application/json
+
+{
+  "name": "Laptop",
+  "price": 25000.00
+}
+
+### Update product (expects 200)
+PUT {{ProductsAPI_HostAddress}}/api/products/1
+Content-Type: application/json
+
+{
+  "name": "Updated Laptop",
+  "price": 27000.00
+}
+
+### Delete product (expects 204, no body)
+DELETE {{ProductsAPI_HostAddress}}/api/products/1
+
+### Validation failure: empty name (expects 400)
+POST {{ProductsAPI_HostAddress}}/api/products
+Content-Type: application/json
+
+{
+  "name": "   ",
+  "price": 100.00
+}
+
+### Validation failure: price <= 0 (expects 400)
+POST {{ProductsAPI_HostAddress}}/api/products
+Content-Type: application/json
+
+{
+  "name": "Keyboard",
+  "price": 0
+}
+
+### Not found (expects 404)
+GET {{ProductsAPI_HostAddress}}/api/products/99999
+Accept: application/json
