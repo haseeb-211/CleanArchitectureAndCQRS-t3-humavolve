@@ -11,13 +11,16 @@ namespace Products.API.Controllers;
 
 [ApiController]
 [Route("api/products")]
-public sealed class ProductsController(IMediator mediator) : ControllerBase
+public sealed class ProductsController(IMediator mediator, ILogger<ProductsController> logger)
+    : ControllerBase
 {
     /// <summary>Returns every product, or an empty collection when none exist.</summary>
     [HttpGet]
     [ProducesResponseType(typeof(IEnumerable<ProductDto>), StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<ProductDto>>> GetAll(CancellationToken cancellationToken)
     {
+        logger.LogDebug("Handling request to retrieve all products");
+
         var products = await mediator.Send(new GetAllProductsQuery(), cancellationToken);
         return Ok(products);
     }
@@ -29,9 +32,17 @@ public sealed class ProductsController(IMediator mediator) : ControllerBase
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ProductDto>> GetById(int id, CancellationToken cancellationToken)
     {
+        logger.LogDebug("Handling request to retrieve product {ProductId}", id);
+
         var product = await mediator.Send(new GetProductByIdQuery(id), cancellationToken);
 
-        return product is null ? NotFound() : Ok(product);
+        if (product is null)
+        {
+            logger.LogWarning("Product {ProductId} was not found", id);
+            return NotFound();
+        }
+
+        return Ok(product);
     }
 
     /// <summary>Creates a product and returns it with a Location header.</summary>
@@ -42,6 +53,8 @@ public sealed class ProductsController(IMediator mediator) : ControllerBase
         [FromBody] CreateProductDto request,
         CancellationToken cancellationToken)
     {
+        logger.LogDebug("Handling request to create product {ProductName}", request.Name);
+
         var created = await mediator.Send(new CreateProductCommand(request.Name, request.Price), cancellationToken);
 
         return CreatedAtAction(nameof(GetById), new { id = created.Id }, created);
@@ -57,6 +70,8 @@ public sealed class ProductsController(IMediator mediator) : ControllerBase
         [FromBody] UpdateProductDto request,
         CancellationToken cancellationToken)
     {
+        logger.LogDebug("Handling request to update product {ProductId}", id);
+
         var updated = await mediator.Send(
             new UpdateProductCommand(id, request.Name, request.Price),
             cancellationToken);
@@ -71,6 +86,8 @@ public sealed class ProductsController(IMediator mediator) : ControllerBase
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Delete(int id, CancellationToken cancellationToken)
     {
+        logger.LogDebug("Handling request to delete product {ProductId}", id);
+
         var deleted = await mediator.Send(new DeleteProductCommand(id), cancellationToken);
 
         return deleted ? NoContent() : NotFound();

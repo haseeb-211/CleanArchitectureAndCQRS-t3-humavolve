@@ -28,5 +28,6 @@ secrets.json
 appsettings.*.local.json
 
 # Logs and local tooling
+Logs/
 *.log
 .dotnet/

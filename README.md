@@ -14,6 +14,7 @@ A product-management REST API built with **ASP.NET Core Web API** on **.NET 10**
 - [Prerequisites](#prerequisites)
 - [Getting Started](#getting-started)
 - [Configuration](#configuration)
+- [Logging](#logging)
 - [API Endpoints](#api-endpoints)
 - [Request and Response Examples](#request-and-response-examples)
 - [Validation](#validation)
@@ -57,6 +58,7 @@ The following are implemented and present in the code:
 - EF Core migrations (`InitialCreate` already exists).
 - Swagger/OpenAPI UI, enabled in the `Development` environment.
 - Centralized exception handling that returns RFC 7807 `application/problem+json` responses.
+- Structured logging through `ILogger<T>` with Serilog: console + rolling daily files, Serilog HTTP request logging, and centralized exception logging.
 - Unit tests (validators, pipeline behavior) and integration tests (full API over `WebApplicationFactory`).
 - A ready-to-use [`.http`](Products.API/Products.API.http) request file.
 
@@ -70,6 +72,11 @@ All versions below are read directly from the project's `.csproj` files. The sol
 |---|---|---|
 | .NET / ASP.NET Core | Target framework and Web API host | `net10.0` (SDK 10.0.300) |
 | Swashbuckle.AspNetCore | Swagger/OpenAPI document + UI | 10.3.0 |
+| Serilog.AspNetCore | Serilog hosting integration, request logging middleware | 10.0.0 |
+| Serilog.Settings.Configuration | Reads the `Serilog` section from `appsettings.json` | 10.0.1 |
+| Serilog.Sinks.Console | Console log sink | 6.1.1 |
+| Serilog.Sinks.File | Rolling file log sink | 7.0.0 |
+| Microsoft.Extensions.Logging.Abstractions | `ILogger<T>` used by handlers and controllers | 10.0.8 |
 | MediatR | CQRS command/query dispatching | 12.5.0 |
 | FluentValidation | Request validation rules | 11.11.0 |
 | FluentValidation.DependencyInjectionExtensions | Registers validators from the assembly | 11.11.0 |
@@ -99,7 +106,7 @@ All versions below are read directly from the project's `.csproj` files. The sol
 | `Products.Domain` | `Product` entity with private setters, `Product.Create` / `Product.Update` factories that enforce invariants, `MaxNameLength`, and `DomainException`. No framework or infrastructure references. | — |
 | `Products.Application` | DTOs, commands, queries, handlers, FluentValidation validators, the `ValidationBehavior` pipeline behavior, the `IApplicationDbContext` abstraction, and `AddApplication()` DI registration. | `Products.Domain` |
 | `Products.Infrastructure` | `ApplicationDbContext`, `ProductConfiguration` entity mapping, EF Core migrations, and `AddInfrastructure(IConfiguration)` which registers the SQL Server `DbContext` and maps `IApplicationDbContext` to it. | `Products.Application`, `Products.Domain` |
-| `Products.API` | `ProductsController`, `ExceptionHandlingMiddleware`, Swagger configuration, and the `Program.cs` composition root. | `Products.Application`, `Products.Infrastructure` |
+| `Products.API` | `ProductsController`, `ExceptionHandlingMiddleware`, Swagger configuration, Serilog logging setup (bootstrap logger, `UseSerilog`, `UseSerilogRequestLogging`), and the `Program.cs` composition root. | `Products.Application`, `Products.Infrastructure` |
 | `Products.Tests` | xUnit unit tests for validators/behavior and integration tests that boot the real API against a SQL Server test database. | `Products.API`, `Products.Application`, `Products.Infrastructure` |
 
 ### Dependency direction
@@ -183,9 +190,9 @@ Products.Infrastructure/
 
 Products.API/
 ├── Products.API.csproj
-├── Program.cs                          # Composition root + Swagger
-├── appsettings.json                    # ConnectionStrings:DefaultConnection
-├── appsettings.Development.json
+├── Program.cs                          # Composition root + Swagger + Serilog setup
+├── appsettings.json                    # ConnectionStrings:DefaultConnection + Serilog sinks/levels
+├── appsettings.Development.json        # Serilog level overrides for Development
 ├── Products.API.http                   # Sample HTTP requests
 ├── Properties/launchSettings.json      # http://localhost:5062 / https://localhost:7169
 ├── Controllers/
@@ -344,6 +351,69 @@ dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Server=YOUR_SERVE
 ### Test database
 
 Integration tests read the `TEST_CONNECTION_STRING` environment variable and fall back to a `ProductsDb_IntegrationTests` database on `.\SQLEXPRESS`. See [Running Tests](#running-tests).
+
+---
+
+## Logging
+
+The API logs through the standard **`Microsoft.Extensions.Logging.ILogger<T>`** abstraction and writes those events with **Serilog**. Serilog is installed and configured **only in `Products.API`** (the composition root); `Products.Application` references `Microsoft.Extensions.Logging.Abstractions` and `Products.Domain`/`Products.Infrastructure` have no logging dependencies, so the Clean Architecture dependency rules are preserved. `appsettings.json` carries **one** logging configuration (the `Serilog` section) — the old `Logging` section was removed so no duplicate console/file providers or duplicate log entries can occur.
+
+### Sinks: console and rolling files
+
+Both sinks are declared in `Products.API/appsettings.json` under `Serilog:WriteTo` and share this output template:
+
+```text
+[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} {Level:u3}] {SourceContext} - {Message:lj}{NewLine}{Exception}
+```
+
+| Sink | Configuration | Behaviour |
+|---|---|---|
+| Console | `Serilog:WriteTo` → `Console` | Timestamp, level, source context (logger category), message, and exception details. Used during local development and normal execution. |
+| File | `Serilog:WriteTo` → `File` | Rolling file with `path` `Logs/products-api-.log`, `rollingInterval` `Day`, `retainedFileCountLimit` `14`, `shared` `true`. |
+
+**Log directory and file naming:** `Logs/products-api-<yyyyMMdd>.log` (for example `Logs/products-api-20261016.log`), one file per calendar day, **14 most recent files retained** (older files are deleted automatically). The path is relative to the process working directory; with `dotnet run --project Products.API` that is the project folder, so logs land in `Products.API/Logs/`. The directory is created automatically on first write. `Logs/` and `*.log` are ignored by `.gitignore`.
+
+### Minimum log levels
+
+Base configuration (`Products.API/appsettings.json`):
+
+| Setting | Value | Purpose |
+|---|---|---|
+| `Serilog:MinimumLevel:Default` | `Information` | Application logs (`Products.*` categories) |
+| `Override:Microsoft` | `Warning` | Framework noise (hosting, DI, MVC internals) |
+| `Override:Microsoft.AspNetCore` | `Warning` | ASP.NET Core internals |
+| `Override:Microsoft.EntityFrameworkCore` | `Warning` | EF Core (SQL command logging off; failures still log) |
+| `Override:Microsoft.Hosting.Lifetime` | `Information` | Keeps "Now listening on" / "Application started" messages |
+
+Environment-specific overrides live in `appsettings.Development.json`, which is merged on top of the base file when `ASPNETCORE_ENVIRONMENT=Development`. It sets `Serilog:MinimumLevel:Default` to `Debug`, so controller/handler diagnostic events are visible in development while production stays at `Information`. Values can also be overridden without editing files, for example:
+
+```powershell
+$env:Serilog__MinimumLevel__Default = "Debug"
+$env:Serilog__MinimumLevel__Override__Microsoft = "Information"
+```
+
+### Which layer logs what (no duplicate events)
+
+| Event | Owner | Level |
+|---|---|---|
+| HTTP request completion: method, path, status code, duration | `UseSerilogRequestLogging()` middleware in `Program.cs` | `Information`, `Error` for 5xx/exceptions |
+| Request handling started (all five endpoints) | `ProductsController` | `Debug` |
+| Product not found on `GET /{id}` | `ProductsController` | `Warning` |
+| Query results (product count, retrieved product) | Query handlers | `Debug` |
+| Product created / updated / deleted (with `{ProductId}`) | Command handlers | `Information` |
+| Product missing during update or delete | Command handlers | `Warning` |
+| Validation failures and domain-rule violations (400) | `ExceptionHandlingMiddleware` | `Warning` |
+| Unhandled exceptions (500) — full exception object and stack trace, server-side only | `ExceptionHandlingMiddleware` | `Error` |
+| Startup / shutdown, fatal boot failures | `Program.cs` (bootstrap logger) | `Information` / `Fatal` |
+
+Every fact is written once: the controller does not log mutation successes (the handler does), and handlers do not log HTTP status codes (request logging does). Expected `400`/`404` outcomes are never logged as errors. Request logging records method, path, status, and elapsed time only — no headers, cookies, bodies, or query strings (`IncludeQueryInRequestPath` defaults to `false`), and no connection strings or credentials are logged.
+
+### Changing log settings
+
+- **Levels:** edit `Serilog:MinimumLevel` in `Products.API/appsettings.json`, or add an override in `appsettings.Development.json` / an environment variable (see above).
+- **Rolling and retention:** `Serilog:WriteTo` → `Args:rollingInterval` (`Hour`, `Day`, `Month`, `Infinite`) and `Args:retainedFileCountLimit` (number of files kept; `14` by default). Change `Args:path` to move the log directory.
+- **Output format:** `Args:outputTemplate` on each sink.
+- **Filesystem permissions:** the account running the API needs write access to the `Logs` directory (created automatically if missing). The directory is not served over HTTP — the app has no static-file middleware, so log files stay on the server.
 
 ---
 
@@ -691,7 +761,7 @@ The following are **proposals only** and are not implemented in this repository:
 
 - Pagination, sorting, and filtering for `GET /api/products`.
 - Authentication and authorization (JWT/bearer identity), plus role-based authorization on mutating endpoints.
-- Structured logging with a logging library (Serilog) and correlation IDs.
+- Correlation IDs attached to every log event (structured logging with `ILogger<T>` + Serilog is already implemented — see [Logging](#logging)).
 - Domain events and a mediator-based outbox for side effects.
 - Soft delete, auditing fields (`CreatedAt`/`UpdatedAt`), and optimistic concurrency.
 - Additional integration test isolation (per-test database or containers).
